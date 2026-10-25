@@ -22,6 +22,7 @@ lower orders still contribute: this is how the model "backs off".
 """
 import json
 import os
+import re
 from pathlib import Path
 
 import numpy as np
@@ -33,6 +34,25 @@ ORDERS = (2, 3, 4)
 # serving/default (the 296 MB "lite" model). Relative paths are resolved from backend/.
 BACKEND_DIR = Path(__file__).resolve().parent
 DEFAULT_MODEL_DIR = BACKEND_DIR / os.environ.get("AMHARICNEXT_MODEL_DIR", "serving/full")
+
+
+# --- Text normalisation (must match how the training corpus was cleaned) ---
+
+# Homophone letters were merged in training. Each base letter stands for its
+# whole series of vowel forms, e.g. ሐ ሑ ሒ ሓ ሔ ሕ ሖ -> ሀ ሁ ሂ ሃ ሄ ህ ሆ.
+HOMOPHONES = {"ሐ": "ሀ", "ኀ": "ሀ", "ሠ": "ሰ", "ዐ": "አ", "ፀ": "ጸ"}
+MERGE = {chr(ord(src) + i): chr(ord(dst) + i) for src, dst in HOMOPHONES.items() for i in range(8)}
+
+SENTENCE_END = re.compile(r"[።፧?!]")
+# Anything that is not an Ethiopic letter or whitespace becomes a space.
+NOT_LETTER = re.compile(r"[^ሀ-ፚᎀ-᎙ⶀ-ⷞꬁ-ꬮ\s]")
+
+
+def normalize(text):
+    """Return the words of the sentence currently being typed, normalised like training."""
+    text = SENTENCE_END.split(text)[-1]          # ። ፧ ? ! start a new sentence
+    text = "".join(MERGE.get(c, c) for c in text)
+    return NOT_LETTER.sub(" ", text).split()
 
 
 def pack(ids):
@@ -107,3 +127,11 @@ class NgramModel:
         top = np.argpartition(-score, k)[:k]
         top = top[np.argsort(-score[top])]
         return [(int(w), float(score[w]), int(order[w])) for w in top if score[w] > 0]
+
+    def suggest(self, text, k=5):
+        """Top-k next words for raw typed text. Uses the last 3 words as context;
+        words outside the vocabulary become <UNK>, exactly as in training."""
+        words = normalize(text)[-3:]
+        ids = [self.w2id.get(w, UNK) for w in words]
+        return [{"word": self.id2w[w], "prob": p, "order": n}
+                for w, p, n in self.suggest_ids(ids, k)]
