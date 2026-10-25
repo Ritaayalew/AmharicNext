@@ -1,0 +1,6 @@
+[project]
+name = "amharicnext-backend"
+version = "0.1.0"
+description = "Amharic next-word suggestion (n-gram language model)"
+requires-python = ">=3.12"
+dependencies = ["numpy>=2.1"]

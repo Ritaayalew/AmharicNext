@@ -1,0 +1,4 @@
+App/backend/model_artifacts/
+App/backend/serving/
+.venv/
+__pycache__/
