@@ -1,11 +1,13 @@
-import { useEffect, useState } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useEffect, useRef, useState } from 'react';
+import { Platform, Pressable, ScrollView, Share, StyleSheet, Text, TextInput, View } from 'react-native';
+import * as Clipboard from 'expo-clipboard';
 import { StatusBar } from 'expo-status-bar';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useFonts } from 'expo-font';
 import Animated, {
   cancelAnimation,
   FadeIn,
+  FadeOut,
   interpolateColor,
   Keyframe,
   useAnimatedStyle,
@@ -20,6 +22,7 @@ import { NotoSansEthiopic_400Regular } from '@expo-google-fonts/noto-sans-ethiop
 import { NotoSansEthiopic_600SemiBold } from '@expo-google-fonts/noto-sans-ethiopic/600SemiBold';
 import { ChipSkeleton, SuggestionChip } from './SuggestionChip';
 import { chip, Colors, motion, radius, space, type, useColors } from './theme';
+import { typeInto } from './translit';
 
 // Set in .env (see .env.example). A phone cannot use "localhost": use the laptop's LAN IP.
 const API_URL = process.env.EXPO_PUBLIC_API_URL;
@@ -46,6 +49,9 @@ export default function App() {
   const [retry, setRetry] = useState(0);
   const [flying, setFlying] = useState<{ word: string; id: number; slot: number } | null>(null);
   const glow = useSharedValue(0);
+  const [geez, setGeez] = useState(false); // Latin -> Ge'ez typing on/off
+  const latinWord = useRef(''); // Latin letters of the word being typed (see translit.ts)
+  const [copied, setCopied] = useState(0);
 
   // Ask the server for suggestions 150 ms after the last change to the text.
   // Every new keystroke clears the timer and aborts the previous request, so only
@@ -91,7 +97,31 @@ export default function App() {
     };
   }, [text, retry]);
 
+  function onChangeText(next: string) {
+    if (!geez) return setText(next);
+    const result = typeInto(text, next, latinWord.current);
+    latinWord.current = result.buffer;
+    setText(result.text);
+  }
+
+  function replaceText(next: string) {
+    latinWord.current = '';
+    setText(next);
+  }
+
+  async function copy() {
+    await Clipboard.setStringAsync(text);
+    setCopied(Date.now()); // the "Copied" label fades in, then out after 1.5 s
+  }
+
+  useEffect(() => {
+    if (!copied) return;
+    const t = setTimeout(() => setCopied(0), 1500);
+    return () => clearTimeout(t);
+  }, [copied]);
+
   function addWord(word: string, slot: number) {
+    latinWord.current = '';
     setText((t) => (t === '' || t.endsWith(' ') ? t : t + ' ') + word + ' ');
     // Briefly tint the composer border so the eye follows the word into the text.
     glow.value = withSequence(
@@ -128,7 +158,7 @@ export default function App() {
           <TextInput
             style={[styles.composer, type.composer, { color: colors.text }]}
             value={text}
-            onChangeText={setText}
+            onChangeText={onChangeText}
             multiline
             maxLength={500}
             placeholder="መጻፍ ይጀምሩ…"
@@ -137,17 +167,77 @@ export default function App() {
             cursorColor={colors.accent}
             accessibilityLabel="Amharic text"
             autoFocus
+            // Ge'ez typing needs the raw letters: no autocorrect, no auto capitals
+            // (capitals choose other consonants, e.g. T = ጠ). On Android the
+            // "visible-password" keyboard also turns off word suggestions.
+            {...(geez && {
+              autoCorrect: false,
+              autoCapitalize: 'none' as const,
+              spellCheck: false,
+              keyboardType: Platform.OS === 'android' ? ('visible-password' as const) : 'default',
+            })}
           />
-          <Pressable
-            style={[styles.clear, { backgroundColor: colors.accentSoft, opacity: text ? 1 : 0.4 }]}
-            onPress={() => setText('')}
-            disabled={!text}
-            accessibilityRole="button"
-            accessibilityLabel="Clear text"
-          >
-            <Text style={[type.caption, styles.clearText, { color: colors.accent }]}>Clear</Text>
-          </Pressable>
+          <View style={styles.composerBar}>
+            <Pressable
+              style={[styles.toggle, { borderColor: colors.border }]}
+              onPress={() => {
+                latinWord.current = '';
+                setGeez((g) => !g);
+              }}
+              accessibilityRole="switch"
+              accessibilityState={{ checked: geez }}
+              accessibilityLabel="Type Latin letters as Ge'ez"
+            >
+              {(['A', 'አ'] as const).map((label) => {
+                const active = (label === 'አ') === geez;
+                return (
+                  <Text
+                    key={label}
+                    style={[
+                      styles.toggleSide,
+                      type.caption,
+                      active
+                        ? { backgroundColor: colors.accent, color: colors.surface }
+                        : { color: colors.muted },
+                    ]}
+                  >
+                    {label}
+                  </Text>
+                );
+              })}
+            </Pressable>
+            <Pressable
+              style={[styles.clear, { backgroundColor: colors.accentSoft, opacity: text ? 1 : 0.4 }]}
+              onPress={() => replaceText('')}
+              disabled={!text}
+              accessibilityRole="button"
+              accessibilityLabel="Clear text"
+            >
+              <Text style={[type.caption, styles.clearText, { color: colors.accent }]}>Clear</Text>
+            </Pressable>
+          </View>
         </Animated.View>
+
+        <View style={styles.actions}>
+          <ActionButton label="Copy" onPress={copy} disabled={!text} colors={colors} />
+          <ActionButton
+            label="Share"
+            onPress={() => Share.share({ message: text })}
+            disabled={!text}
+            colors={colors}
+          />
+          {copied ? (
+            <Animated.Text
+              key={copied}
+              entering={FadeIn.duration(motion.duration.fast)}
+              exiting={FadeOut.duration(motion.duration.slow)}
+              style={[type.caption, styles.copied, { color: colors.muted }]}
+              accessibilityLiveRegion="polite"
+            >
+              Copied
+            </Animated.Text>
+          ) : null}
+        </View>
 
         <EmptyHint visible={text.trim() === '' && !offline} colors={colors} reduceMotion={reduceMotion} />
 
@@ -208,6 +298,21 @@ export default function App() {
       </ScrollView>
       <StatusBar style="auto" />
     </View>
+  );
+}
+
+function ActionButton(props: { label: string; onPress: () => void; disabled: boolean; colors: Colors }) {
+  const { label, onPress, disabled, colors } = props;
+  return (
+    <Pressable
+      style={[styles.action, { borderColor: colors.border, backgroundColor: colors.surface, opacity: disabled ? 0.4 : 1 }]}
+      onPress={onPress}
+      disabled={disabled}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+    >
+      <Text style={[type.caption, styles.actionText, { color: colors.text }]}>{label}</Text>
+    </Pressable>
   );
 }
 
@@ -278,7 +383,14 @@ const styles = StyleSheet.create({
     shadowOffset: { width: 0, height: 4 },
   },
   composer: { minHeight: 132, textAlignVertical: 'top', padding: 0 },
-  clear: { alignSelf: 'flex-end', borderRadius: radius.pill, paddingHorizontal: space.lg, paddingVertical: space.sm },
+  composerBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  toggle: { flexDirection: 'row', borderWidth: 1, borderRadius: radius.pill, padding: 3 },
+  toggleSide: { fontSize: 14, minWidth: 34, textAlign: 'center', borderRadius: radius.pill, paddingVertical: space.xs, overflow: 'hidden' },
+  clear: { borderRadius: radius.pill, paddingHorizontal: space.lg, paddingVertical: space.sm },
+  actions: { flexDirection: 'row', alignItems: 'center', gap: space.sm },
+  action: { borderWidth: 1, borderRadius: radius.pill, paddingHorizontal: space.lg, paddingVertical: space.sm },
+  actionText: { fontSize: 14 },
+  copied: { fontSize: 14, marginLeft: space.xs },
   clearText: { fontSize: 14 },
   hint: { flexDirection: 'row', alignItems: 'center', gap: space.sm, paddingHorizontal: space.xs },
   hintText: { flexShrink: 1 },
